@@ -79,10 +79,7 @@ def query(timeout: float = 1.0) -> bytes:
             os.close(fd)
         return result.get("data", b"")
     else:
-        # Windows 分支：控制台默认开 ENABLE_LINE_INPUT(0x2)/ENABLE_ECHO_INPUT(0x4)，
-        # ReadFile 必须等回车才返回且输入会回显；OSC 回复没有回车，必须关掉
-        # ENABLE_VIRTUAL_TERMINAL_INPUT(0x200) 默认关，需开启才能收到 VT 回复
-        # 依据: https://learn.microsoft.com/en-us/windows/console/setconsolemode
+        # Windows 分支：使用 CONIN$ 强制获取控制台输入句柄，避免 stdin 重定向干扰
         import ctypes
         import msvcrt
         from ctypes import wintypes
@@ -95,25 +92,33 @@ def query(timeout: float = 1.0) -> bytes:
         set_mode = k32.SetConsoleMode
         set_mode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
 
-        handle = get_handle(-10)  # STD_INPUT_HANDLE
+        # 尝试打开 CONIN$ 设备（始终指向控制台输入）
+        try:
+            conin_fd = os.open("CONIN$", os.O_RDWR | os.O_BINARY)
+            handle = msvcrt.get_osfhandle(conin_fd)
+        except Exception:
+            # 若失败则回退到标准输入句柄（可能被重定向，但作为最后的尝试）
+            handle = get_handle(-10)  # STD_INPUT_HANDLE
+            conin_fd = sys.stdin.fileno()
+
+        # 保存原控制台模式
         mode = wintypes.DWORD()
         if get_mode(handle, ctypes.byref(mode)):
-            set_mode(
-                handle, (mode.value | 0x200 | 0x80) & ~0x6
-            )  # 开 VT 输入/扩展标志，关行缓冲/回显
+            # 开 VT 输入(0x200) 和扩展标志(0x80)，关行缓冲(0x2)和回显(0x4)
+            set_mode(handle, (mode.value | 0x200 | 0x80) & ~0x6)
         else:
             mode = None
-        msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)  # 关 CRT 文本模式转换
 
-        fd = sys.stdin.fileno()
+        # 发送查询到 stdout（控制台输出）
         os.write(sys.stdout.fileno(), QUERY)
+
         result = {}
 
         def _read():
             buf = b""
             while not REPLY.search(buf):
                 try:
-                    buf += os.read(fd, 4096)
+                    buf += os.read(conin_fd, 4096)
                 except OSError:
                     break
             result["data"] = buf
@@ -121,8 +126,15 @@ def query(timeout: float = 1.0) -> bytes:
         thread = threading.Thread(target=_read, daemon=True)
         thread.start()
         thread.join(timeout)
-        if mode is not None:  # 恢复控制台模式
+
+        # 恢复控制台模式
+        if mode is not None:
             set_mode(handle, mode.value)
+
+        # 关闭我们打开的 CONIN$ 描述符（不影响系统句柄）
+        if conin_fd != sys.stdin.fileno() and conin_fd != sys.stdout.fileno():
+            os.close(conin_fd)
+
         return result.get("data", b"")
 
 
