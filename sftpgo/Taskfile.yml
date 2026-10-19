@@ -1,0 +1,68 @@
+version: "3"
+
+# 临时把本机目录共享给其他设备：SFTPGo 的 portable 子命令自带 WebDAV 服务端。
+# 下面这些默认值集中放在这里，可以在命令行逐项覆盖，免得每次敲一长串参数。
+# 默认值里不要写死仓库之外的具体路径，换台机器或换个用户名就会失效。
+
+vars:
+  SFTPGO: '{{.SFTPGO | default "sftpgo"}}'
+  USER_NAME: '{{.USER_NAME | default "eggroll"}}'
+  PERMS: '{{.PERMS | default "*"}}'
+  WEBDAV_PORT: '{{.WEBDAV_PORT | default "6755"}}'
+  # 只共享 WebDAV，不需要 SFTP。portable 把 SFTP 端口为 0 解释为“在一个随机端口上监听”，
+  # 等于额外多开一个暴露在所有网卡上的服务，帮助中写明该参数小于 0 才是关闭，因此默认取 -1。
+  SFTP_PORT: '{{.SFTP_PORT | default "-1"}}'
+  LOG_LEVEL: '{{.LOG_LEVEL | default "info"}}'
+
+tasks:
+  default:
+    desc: 等价于 start，前台共享目录
+    cmds:
+      - task: start
+
+  start:
+    desc: 前台共享目录（Ctrl-C 停止），随机密码由 sftpgo 生成并打印到控制台
+    cmds:
+      - |
+        if [ -z "{{.DIR}}" ]; then
+          printf '\033[31m错误：缺少共享目录参数 DIR\033[0m\n' >&2
+          printf '用法示例：task sftpgo:start DIR=/home/eggroll/共享目录\n' >&2
+          printf 'DIR 必须显式传入，不提供默认值，以免误将家目录或整个仓库共享出去。\n' >&2
+          exit 1
+        fi
+
+        if [ ! -d "{{.DIR}}" ]; then
+          printf '\033[31m错误：DIR 指向的路径不是已存在的目录：%s\033[0m\n' "{{.DIR}}" >&2
+          printf '用法示例：task sftpgo:start DIR=/home/eggroll/共享目录\n' >&2
+          exit 1
+        fi
+
+        # sftpgo 在端口被占用时会先打印 “Portable mode ready” 与密码，再抛出英文的
+        # “address already in use”，用户会先看到已经就绪的假象，所以在启动前自己先查一次端口。
+        port_listening=''
+        if command -v ss >/dev/null 2>&1; then
+          port_listening="$(ss -Hltn "sport = :{{.WEBDAV_PORT}}")"
+        elif (exec 3<>"/dev/tcp/127.0.0.1/{{.WEBDAV_PORT}}") 2>/dev/null; then
+          port_listening='occupied'
+        fi
+        if [ -n "$port_listening" ]; then
+          printf '\033[31m错误：WebDAV 端口 %s 已被占用，请先结束占用该端口的程序，或用 WEBDAV_PORT=其他端口 重新运行。\033[0m\n' "{{.WEBDAV_PORT}}" >&2
+          exit 1
+        fi
+
+        # 服务监听所有网卡且不启用 TLS，WebDAV 使用 Basic 认证，密码与文件内容在局域网内
+        # 都是明文传输；需要从外网访问时应经 Cloudflare Tunnel 之类的 https 入口转发，
+        # 不要把这个端口直接暴露到公网。
+        #
+        # 不传 --password 与 --password-file：portable 在不给密码时会自行生成随机密码，
+        # 并把密码写进日志。自行生成密码属于重复实现它已有的功能，也更容易出现口令强度不足。
+        # 不传 --log-file-path：该参数的说明是留空即关闭日志，显式传入会连密码日志一起关掉，
+        # 密码也就不会出现在控制台。
+        # 把日志级别显式设为 info 及以上，是为了不让 debug 级别的逐请求日志淹没控制台输出。
+        exec "{{.SFTPGO}}" portable \
+          --directory "{{.DIR}}" \
+          --username "{{.USER_NAME}}" \
+          --permissions '{{.PERMS}}' \
+          --webdav-port "{{.WEBDAV_PORT}}" \
+          --sftpd-port "{{.SFTP_PORT}}" \
+          --log-level "{{.LOG_LEVEL}}"

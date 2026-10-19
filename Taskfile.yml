@@ -1,0 +1,13 @@
+version: "3"
+
+# 本仓库按功能模块拆分 Taskfile，根目录只做汇总，方便用 task --list 一次看到全部入口。
+# 汇总时保留模块前缀，是因为各模块都可能定义 default，用前缀才能区分。
+
+includes:
+  sftpgo: ./sftpgo/Taskfile.yml
+
+tasks:
+  default:
+    desc: 列出全部可用任务
+    cmds:
+      - task --list-all
