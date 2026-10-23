@@ -1,9 +1,8 @@
 // ==UserScript==
 // @name         网易云网页版防息屏
 // @namespace    local.eggroll.webplayer
-// @version      0.1.0
+// @version      0.1.1
 // @description  在 music.163.com 播放器页面上提供防息屏开关：开启后页面可见期间持有屏幕唤醒锁，切后台自动释放、回前台自动重取
-// @match        https://music.163.com/st/webplayer*
 // @match        https://music.163.com/*
 // @grant        none
 // @run-at       document-idle
@@ -42,25 +41,31 @@
     }
 
     async function release() {
-        if (!sentinel) return;
+        const lock = sentinel;
+        if (!lock) return;
+        // 先清空引用再等待释放完成：释放过程中再进入本函数时不会重复释放同一把锁
+        sentinel = null;
         try {
-            await sentinel.release();
+            await lock.release();
             log("debug", "屏幕锁已释放");
         } catch (_) {
             // 已被浏览器释放（切后台/锁屏），忽略
         }
-        sentinel = null;
     }
 
     async function acquire() {
         if (!enabled || !isSupported()) return;
         if (document.hidden) return;
+        // 已持有时不重新申请：释放再获取的间隙里屏幕有机会熄灭，且没有实际收益
+        if (sentinel) return;
         try {
-            await release();
-            sentinel = await navigator.wakeLock.request("screen");
-            sentinel.addEventListener(
+            const lock = await navigator.wakeLock.request("screen");
+            sentinel = lock;
+            lock.addEventListener(
                 "release",
                 () => {
+                    // 只认当前这把锁：旧锁的释放事件可能晚于新锁赋值才送达，直接把 sentinel 置空会误伤新锁
+                    if (sentinel !== lock) return;
                     sentinel = null;
                     log("debug", "屏幕锁已被系统释放（切后台/锁屏）");
                 },
@@ -87,7 +92,9 @@
         if (!btn) return;
         const label = `防息屏：${enabled ? "开" : "关"}`;
         btn.textContent = label;
-        btn.classList.toggle("is-active", enabled);
+        // 开关状态只用两个字表达，扫一眼很难判断，这里用底色区分：开启为绿色，关闭为半透明黑
+        btn.style.background = enabled ? "rgba(32,160,90,.9)" : "rgba(0,0,0,.55)";
+        btn.style.borderColor = enabled ? "rgba(32,160,90,.9)" : "rgba(255,255,255,.35)";
         btn.setAttribute("aria-pressed", enabled ? "true" : "false");
         btn.title = enabled ? "屏幕将保持常亮（切后台自动释放）" : "开启后屏幕不会自动熄灭";
     }
