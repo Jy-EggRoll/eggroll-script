@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网易云网页版防息屏
 // @namespace    local.eggroll.webplayer
-// @version      0.1.1
+// @version      0.1.2
 // @description  在 music.163.com 播放器页面上提供防息屏开关：开启后页面可见期间持有屏幕唤醒锁，切后台自动释放、回前台自动重取
 // @match        https://music.163.com/*
 // @grant        none
@@ -25,6 +25,8 @@
 
     let sentinel = null;
     let enabled = false;
+    // 最近一次申请失败的原因。开关因此回退为关时靠它把原因显示在按钮上，避免静默失败
+    let errorHint = "";
 
     function log(level, message) {
         // 原型阶段统一走 console.debug，便于在页面控制台按级别过滤
@@ -72,9 +74,23 @@
                 { once: true },
             );
             log("debug", "屏幕锁已获取");
+            errorHint = "";
         } catch (err) {
             sentinel = null;
-            log("warn", `获取屏幕锁失败: ${err && err.name ? err.name : err}`);
+            const reason = err && err.name ? err.name : String(err);
+            log("warn", `获取屏幕锁失败: ${reason}`);
+            // 申请被拒时回退为关：否则按钮显示开、实际没有锁，用户会误以为屏幕不会熄灭，
+            // 而且持久化的“开”会让下次打开页面继续重试同样的失败
+            if (enabled) {
+                enabled = false;
+                errorHint = reason;
+                try {
+                    localStorage.setItem(STORAGE_KEY, "0");
+                } catch (_) {
+                    // localStorage 不可用时只丢持久化，回退本身已经生效
+                }
+            }
+            render();
         }
     }
 
@@ -90,17 +106,24 @@
     function render() {
         const btn = document.getElementById("ncm-wakelock-btn");
         if (!btn) return;
-        const label = `防息屏：${enabled ? "开" : "关"}`;
-        btn.textContent = label;
+        // 申请失败回退后按钮不能只显示“关”，否则用户不知道刚才是申请失败而不是自己关掉了
+        const failed = !enabled && errorHint !== "";
+        btn.textContent = failed ? "防息屏：不可用" : `防息屏：${enabled ? "开" : "关"}`;
         // 开关状态只用两个字表达，扫一眼很难判断，这里用底色区分：开启为绿色，关闭为半透明黑
         btn.style.background = enabled ? "rgba(32,160,90,.9)" : "rgba(0,0,0,.55)";
         btn.style.borderColor = enabled ? "rgba(32,160,90,.9)" : "rgba(255,255,255,.35)";
         btn.setAttribute("aria-pressed", enabled ? "true" : "false");
-        btn.title = enabled ? "屏幕将保持常亮（切后台自动释放）" : "开启后屏幕不会自动熄灭";
+        if (failed) {
+            btn.title = `无法保持屏幕常亮（${errorHint}），已自动关闭，再点一次可以重试`;
+        } else {
+            btn.title = enabled ? "屏幕将保持常亮（切后台自动释放）" : "开启后屏幕不会自动熄灭";
+        }
     }
 
     function toggle() {
         enabled = !enabled;
+        // 每次点击都算一次新的意图，先清掉上次的失败提示，失败会重新写入
+        errorHint = "";
         try {
             localStorage.setItem(STORAGE_KEY, enabled ? "1" : "0");
         } catch (_) {
