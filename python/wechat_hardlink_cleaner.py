@@ -446,7 +446,6 @@ def print_plan(pal: Palette, root: str, plans: list[GroupPlan]) -> None:
             for victim in sorted(plan.victims, key=_victim_order):
                 print(f"  删除  {pal(victim.name, 'yellow')}")
         print()
-    print()
 
 
 def print_summary(pal: Palette, stats: Stats, probe: bool, apply: bool) -> None:
@@ -484,7 +483,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="wechat_hardlink_cleaner.py",
         description="清理微信接收目录里由硬链接产生的重复路径（默认只打印计划）",
     )
-    parser.add_argument("root", metavar="ROOT", help="要扫描的根目录")
+    parser.add_argument(
+        "root",
+        metavar="ROOT",
+        nargs="?",
+        default=".",
+        help="要扫描的根目录（默认当前目录）",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true", help="真正删除多余路径")
     mode.add_argument("--probe", action="store_true", help="只输出诊断统计")
