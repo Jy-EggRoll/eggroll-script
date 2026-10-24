@@ -8,19 +8,20 @@ X.pdf 与 X(1).pdf 两条路径。路径多了以后，目录看着乱，同步�
 用法:
   python wechat_hardlink_cleaner.py ROOT            # 只打印计划，不动文件
   python wechat_hardlink_cleaner.py ROOT --apply    # 按计划删除多余路径
-  python wechat_hardlink_cleaner.py ROOT --probe    # 只输出诊断统计
+  python wechat_hardlink_cleaner.py                 # 预演当前目录
   python wechat_hardlink_cleaner.py ROOT --log-level debug
 
 安全边界（这几条是刻意的限制，不是功能缺失）:
   - 只处理同一目录内、同一 (st_dev, st_ino)、st_nlink >= 2 的文件组
   - 只删名字里带半角括号数字后缀的路径；没有编号的原名一律保留
   - 删除前重新 stat 确认 inode 未变；绝不 rename、不删目录、不跟随符号链接
+  - Windows 上待删文件带只读属性时，先清除只读再删，删完把保留项恢复为只读
   - 不碰 git：遍历时跳过 .git 目录，也不调用任何 git 命令
 
 退出码:
   0  正常结束（预演、诊断、执行成功都算正常）
   1  根目录不存在或不是目录
-  2  有路径在执行时未能删除（通常是被其他程序占用，关掉后重跑即可）
+  2  有路径在执行时未能删除（常见原因是文件被占用或权限不足，处理后重跑即可）
 """
 
 import argparse
@@ -369,8 +370,16 @@ def _unchanged(entry: Entry, info: os.stat_result) -> bool:
     )
 
 
+def _is_readonly(info: os.stat_result) -> bool:
+    """Windows 上 DeleteFile 对带只读属性的文件返回 ERROR_ACCESS_DENIED。"""
+    return not (info.st_mode & stat.S_IWRITE)
+
+
 def apply_plan(plans: list[GroupPlan], stats: Stats) -> None:
     for plan in plans:
+        # 硬链接共享同一个文件记录，只读属性也是共享的。为了让删除通过而清掉只读，
+        # 会把保留项一起变成可写，所以先记下原状态，这一组处理完再恢复。
+        keeper_was_readonly: bool | None = None
         for victim in plan.victims:
             # 计划与执行之间可能隔着几秒，用户也可能同时开着微信在下载。
             # 每次删除前重新核对，是为了让“删错文件”在机制上不可能发生。
@@ -396,6 +405,16 @@ def apply_plan(plans: list[GroupPlan], stats: Stats) -> None:
                 log.warning("保留项 %s 的内容或 inode 已变化，跳过整组", plan.keeper.path)
                 stats.failed += 1
                 break
+            if os.name == "nt" and _is_readonly(current):
+                if keeper_was_readonly is None:
+                    keeper_was_readonly = _is_readonly(keeper_info)
+                try:
+                    os.chmod(victim.path, current.st_mode | stat.S_IWRITE)
+                except OSError as exc:
+                    log.error("无法清除只读属性 %s：%s", victim.path, exc)
+                    stats.failed += 1
+                    continue
+                log.info("已清除只读属性以便删除 %s", victim.path)
             try:
                 os.unlink(victim.path)
             except OSError as exc:
@@ -406,14 +425,19 @@ def apply_plan(plans: list[GroupPlan], stats: Stats) -> None:
             else:
                 stats.deleted += 1
                 log.debug("已删除 %s", victim.path)
+        if keeper_was_readonly:
+            try:
+                info = os.lstat(plan.keeper.path)
+                os.chmod(plan.keeper.path, info.st_mode & ~stat.S_IWRITE)
+                log.info("已把保留项恢复为只读 %s", plan.keeper.path)
+            except OSError as exc:
+                log.warning("保留项 %s 恢复只读失败：%s", plan.keeper.path, exc)
 
 
-def print_header(pal: Palette, root: str, probe: bool, apply: bool) -> None:
+def print_header(pal: Palette, root: str, apply: bool) -> None:
     print(pal("微信硬链接清理", "bold", "cyan"))
     print(f"  根目录：{root}")
-    if probe:
-        print("  模式：诊断（只统计，不输出删除计划）")
-    elif apply:
+    if apply:
         print(pal("  模式：执行（会删除多余路径）", "yellow"))
     else:
         print("  模式：预演（只打印计划，不改动任何文件）")
@@ -448,7 +472,7 @@ def print_plan(pal: Palette, root: str, plans: list[GroupPlan]) -> None:
         print()
 
 
-def print_summary(pal: Palette, stats: Stats, probe: bool, apply: bool) -> None:
+def print_summary(pal: Palette, stats: Stats, apply: bool) -> None:
     print(pal("摘要", "bold"))
     print(f"  扫描目录 {stats.directories} 个，普通文件 {stats.regular_files} 个")
     print(
@@ -467,9 +491,7 @@ def print_summary(pal: Palette, stats: Stats, probe: bool, apply: bool) -> None:
             f"  另有 {stats.singleton_links} 个文件链接数大于 1，但同目录内只有一条路径"
             "（链接建在别处，未处理）"
         )
-    if probe:
-        print(f"  若执行将删除 {stats.planned} 条路径")
-    elif apply:
+    if apply:
         print(f"  已删除 {stats.deleted} 条路径，失败 {stats.failed} 条")
     else:
         print(f"  计划删除 {stats.planned} 条路径（加上 --apply 才会真正执行）")
@@ -490,9 +512,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="要扫描的根目录（默认当前目录）",
     )
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--apply", action="store_true", help="真正删除多余路径")
-    mode.add_argument("--probe", action="store_true", help="只输出诊断统计")
+    parser.add_argument("--apply", action="store_true", help="真正删除多余路径")
     parser.add_argument(
         "--log-level",
         default="info",
@@ -535,18 +555,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     pal = Palette(enable_ansi())
-    print_header(pal, root, args.probe, args.apply)
+    print_header(pal, root, args.apply)
 
     stats = Stats()
     plans = plan_tree(root, stats)
-    if args.probe:
-        print_summary(pal, stats, probe=True, apply=False)
-        return 0
-
     print_plan(pal, root, plans)
     if args.apply:
         apply_plan(plans, stats)
-    print_summary(pal, stats, probe=False, apply=args.apply)
+    print_summary(pal, stats, apply=args.apply)
     # 有失败时用非零退出码，方便放进脚本里判断是否需要关掉微信再跑一次
     return 2 if stats.failed else 0
 
