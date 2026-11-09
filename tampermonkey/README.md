@@ -5,6 +5,7 @@
 ## 现有脚本
 
 - [网易云网页版防息屏](netease-wakelock/netease-wakelock.user.js)：在音乐网页版播放器上提供防息屏开关，开启后页面可见期间持有屏幕唤醒锁，切到后台自动释放，回到前台重新获取。
+- [哔哩哔哩网页全屏快捷键](bilibili-webfullscreen/bilibili-webfullscreen.user.js)：在 B 站视频页与直播页按 `V` 切换网页全屏，再按一次退出；输入框、弹幕框和中文输入法组合期间不触发。
 
 ## 安装与更新
 
@@ -13,3 +14,5 @@
 ## 使用限制
 
 防息屏依赖 [Screen Wake Lock API](https://developer.mozilla.org/zh-CN/docs/Web/API/Screen_Wake_Lock_API)，它只能阻止显示器关闭和锁屏，无法阻止系统进入睡眠或合盖休眠。浏览器还要求页面处于安全上下文（HTTPS）且处于可见状态，否则拿不到锁。
+
+网页全屏快捷键依赖 B 站播放器现有的“网页全屏”按钮；部分页面不渲染该按钮时会退回播放器的未公开接口，B 站改版后可能失效。
